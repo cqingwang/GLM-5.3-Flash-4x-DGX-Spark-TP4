@@ -53,6 +53,12 @@ def main():
     if not a.root.is_absolute() or not a.container or a.container.startswith('-'):
         p.error('absolute root and explicit container name required')
     stop_aux(a.root, a.container)
+    containers = subprocess.check_output(
+        ['docker', 'ps', '-a', '--format', '{{.Names}}'], text=True
+    ).splitlines()
+    if a.container not in containers:
+        print(f'container absent; nothing to stop: {a.container}')
+        return
     subprocess.run(['docker', 'stop', '--time', '30', a.container], check=True)
 
 if __name__ == '__main__':

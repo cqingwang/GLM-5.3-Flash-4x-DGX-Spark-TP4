@@ -33,15 +33,20 @@ class RuntimeTests(unittest.TestCase):
     with self.assertRaises(PermissionError):s.stop_aux(r,'model-r0',proc)
  def test_stop_order_and_no_remove(self):
   events=[]
-  with patch('sys.argv',['stop','--root','/x','--container','model-r0']),patch.object(s,'stop_aux',side_effect=lambda *x:events.append('aux')),patch.object(s.subprocess,'run',side_effect=lambda argv,**kw:events.append(argv)):
+  with patch('sys.argv',['stop','--root','/x','--container','model-r0']),patch.object(s,'stop_aux',side_effect=lambda *x:events.append('aux')),patch.object(s.subprocess,'check_output',side_effect=lambda argv,**kw:(events.append(argv) or 'model-r0\n')),patch.object(s.subprocess,'run',side_effect=lambda argv,**kw:events.append(argv)):
    s.main()
-  self.assertEqual(events,['aux',['docker','stop','--time','30','model-r0']])
+  self.assertEqual(events,['aux',['docker','ps','-a','--format','{{.Names}}'],['docker','stop','--time','30','model-r0']])
+ def test_stop_missing_container_is_idempotent_but_daemon_errors_propagate(self):
+  with patch('sys.argv',['stop','--root','/x','--container','model-r0']),patch.object(s,'stop_aux'),patch.object(s.subprocess,'check_output',return_value=''),patch.object(s.subprocess,'run') as stop:
+   s.main();stop.assert_not_called()
+  with patch('sys.argv',['stop','--root','/x','--container','model-r0']),patch.object(s,'stop_aux'),patch.object(s.subprocess,'check_output',side_effect=subprocess.CalledProcessError(1,['docker'])):
+   with self.assertRaises(subprocess.CalledProcessError):s.main()
  def test_actual_launcher_refuses_existing_before_sync(self):
   with tempfile.TemporaryDirectory() as td:
    r=Path(td);b=r/'bin';b.mkdir();log=r/'log'
    for name,body in {'ssh':'exec bash -c "${@: -1}"','docker':'''echo "$*" >> "$TEST_LOG"; if [[ $1 == ps ]]; then echo abc; else echo '{"Name":"/existing-r0","Mounts":[]}'; fi''' ,'rsync':'echo RSYNC >> "$TEST_LOG"; exit 99'}.items():
     p=b/name;p.write_text('#!/usr/bin/env bash\n'+body+'\n');p.chmod(0o755)
-   env=r/'config';env.write_text('HOSTS="a b c d"\nIPS="1 2 3 4"\nCTN=existing\nOVERLAY_REMOTE=/unused\n')
+   env=r/'config';env.write_text('HOSTS="a b c d"\nIPS="1 2 3 4"\nIB_HCA=rocep1s0f0,rocep1s0f1\nIMAGE=test:v1\nMODEL_DIR=/model\nDRAFT_DIR=/draft\nCTN=existing\nOVERLAY_REMOTE=/unused\n')
    p=subprocess.run(['bash',str(ROOT/'start.sh'),'serve'],env={**os.environ,'PATH':str(b)+':'+os.environ['PATH'],'ENV_FILE':str(env),'TEST_LOG':str(log)},capture_output=True,text=True)
    self.assertNotEqual(p.returncode,0);self.assertNotIn('RSYNC',log.read_text());self.assertIn('inspect --format',log.read_text());self.assertIn('abc',log.read_text())
  def test_actual_dry_run_no_external_calls(self):
@@ -49,7 +54,7 @@ class RuntimeTests(unittest.TestCase):
    r=Path(td);b=r/'bin';b.mkdir();log=r/'calls'
    for name in ('ssh','docker','rsync'):
     p=b/name;p.write_text('#!/bin/sh\necho CALLED >> "$TEST_LOG"\nexit 99\n');p.chmod(0o755)
-   env=r/'config';env.write_text('source .env.example\n')
+   env=r/'config';env.write_text('HOSTS="a b c d"\nIPS="1 2 3 4"\nIB_HCA=rocep1s0f0,rocep1s0f1\nIMAGE=test:v1\nMODEL_DIR=/model\nDRAFT_DIR=/draft\nCTN=existing\nOVERLAY_REMOTE=/unused\n')
    p=subprocess.run(['bash',str(ROOT/'start.sh'),'serve'],env={**os.environ,'PATH':str(b)+':'+os.environ['PATH'],'ENV_FILE':str(env),'TEST_LOG':str(log),'DRY':'1'},capture_output=True,text=True)
    self.assertEqual(p.returncode,0,p.stderr);self.assertFalse(log.exists());self.assertIn('[dry-run] rsync',p.stdout)
  def test_profile_has_selected_static_flags(self):

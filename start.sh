@@ -2,7 +2,8 @@
 # GLM-5.3-Flash NVFP4 on 4x DGX Spark, vLLM TP4 with DFlash2 adaptive draft.
 # usage: ./start.sh serve|stop|status|logs [rank]   (config in .env, copy .env.example)
 set -euo pipefail
-cd "$(dirname "$0")"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$SCRIPT_DIR"
 ENV_FILE=${ENV_FILE:-.env}
 [[ -f $ENV_FILE ]] || { echo "copy .env.example to .env first (or set ENV_FILE)"; exit 1; }
 # Optional operator pin: with PRODUCTION_SOURCE_SHA256 set, refuse to start unless every file matches SOURCE_CLOSURE.json.
@@ -11,6 +12,9 @@ if [[ -n "${PRODUCTION_SOURCE_SHA256:-}" ]]; then
 fi
 # shellcheck disable=SC1090
 source "$ENV_FILE"
+# Load tuning defaults after the managed deployment block so profile values
+# can consume the target's pinned HCA and transport settings.
+source profiles/current.env
 CMD=${1:-status}
 read -r -a HOSTS <<<"$HOSTS"; read -r -a IPS <<<"$IPS"
 source scripts/transport.sh
@@ -92,7 +96,7 @@ run_rank() {
     -e TRITON_CACHE_DIR=/cache/triton -e TORCHINDUCTOR_CACHE_DIR=/cache/inductor -e CUDA_CACHE_PATH=/cache/nv \
     -e VLLM_ADAPTIVE_K_HI=$K_HI -e VLLM_ADAPTIVE_K_LO=$K_LO -e VLLM_ADAPTIVE_K_MODE=per-request -e VLLM_ADAPTIVE_K_SEED=1.0 \
     -e VLLM_ADAPTIVE_K_DOWN=0.42 -e VLLM_ADAPTIVE_K_UP=0.58 -e VLLM_ADAPTIVE_K_ALPHA=0.15 -e VLLM_ADAPTIVE_K_SIGNAL=pos \
-    $(transport_args) \
+    $(transport_args "$r") \
     $IMAGE serve /model --served-model-name $SERVED_NAME --dtype bfloat16 \
     --tensor-parallel-size 4 --nnodes 4 --node-rank $r --master-addr ${IPS[0]} --master-port ${MASTER_PORT:-29669} --distributed-executor-backend mp \
     --max-model-len $MAX_MODEL_LEN --kv-cache-dtype fp8_e4m3 --kv-cache-memory-bytes $KV_BYTES --gpu-memory-utilization ${GPU_UTIL:-0.85} \
@@ -117,6 +121,10 @@ case $CMD in
       for h in "${HOSTS[@]}"; do
         rssh "$h" "python3 -B -S -c $library_code --library $NCCL_HOST_DIR/libnccl.so.2.30.7 --sha256 $SWITCHLESS_NCCL_SHA256"
       done
+    elif [[ ${TRANSPORT:-switched} == ring-only ]]; then
+      for h in "${HOSTS[@]}"; do
+        rssh "$h" "printf '%s  %s\\n' '$NCCL_LIBRARY_SHA256' '$NCCL_HOST_DIR/libnccl.so.2.30.7' | sha256sum -c -"
+      done
     fi
     # Inspect every preserved container before any source synchronization.
     # Ship code as an argument, so preflight works before scripts are installed.
@@ -136,7 +144,7 @@ case $CMD in
     echo "launched ${CTN}-r0..3; ./start.sh status until /health is 200 (cold-cache boots can take longer)";;
   stop)   # stop, never remove: the containers stay for inspection or `docker start`; a new deployment needs a fresh CTN
     for r in 0 1 2 3; do
-      rssh "${HOSTS[$r]}" "python3 $OVERLAY_REMOTE/scripts/stop_preserving.py --root $OVERLAY_REMOTE --container ${CTN}-r$r"
+      rssh "${HOSTS[$r]}" "python3 $SCRIPT_DIR/scripts/stop_preserving.py --root $OVERLAY_REMOTE --container ${CTN}-r$r"
     done;;
   status)
     for r in 0 1 2 3; do rssh "${HOSTS[$r]}" "echo \$(hostname) \$(docker ps -a --filter name=${CTN}-r$r --format '{{.Status}}') avail=\$(free -g | awk 'NR==2{print \$7}')G"; done
