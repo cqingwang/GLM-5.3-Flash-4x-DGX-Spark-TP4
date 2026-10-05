@@ -5,6 +5,9 @@ qeval 75/75 at c1, KL 0.0293 on the same panel, step time unchanged against the 
 production stack. See [2026-09-28 results](results/2026-09-28-release.md). The paragraphs below
 describe the 2026-09-27 GDN/router admission.
 
+The latest live ring TP4 deployment, topology repair and LAN benchmark are recorded in
+[2026-10-06 results](results/2026-10-06-ring-tp4.md), with the complete 20-job matrix in its JSON artifact.
+
 The 2026-09-27 recipe added GDN metadata fusion and router deduplication to LVKP-S-L2. Quantization remains NVFP4 for routed experts
 and the existing `lossless8` profile for 8-bit non-expert weights. `lossless8`
 is a profile name, not a mathematically lossless conversion. A component speed result does not
@@ -47,14 +50,14 @@ request throughput including prefill or a component CUDA-event benchmark.
 
 ```bash
 python3 -B bench/final_sparkdash.py YOUR_NEW_LABEL \
-  --base http://localhost:5555/api/sparks/spark-01/llm \
-  --model GLM-5.3-Flash-FP8 --out YOUR_NEW_RESULT.json
+  --base http://192.168.2.180:5555/api/sparks/spark-a/llm \
+  --model GLM-5.3-Flash-FP8 --port 8888 --out YOUR_NEW_RESULT.json
 ```
 
 Set `--base` to your dashboard endpoint. The historical API model alias in this
 command does not describe the weight format: this recipe retains NVFP4+8-bit.
-The collector checks the dashboard's `spark-01` logical identifier and model port
-8093. Match these configured identifiers before running. It creates a new output
+The collector checks SparkDash's `spark-a` logical identifier and configured
+model port 8888. It creates a new output
 exclusively, refuses an already-active benchmark, polls each returned job ID,
 rejects reused/stale IDs, and never substitutes the dashboard's last result.
 There is no automatic retry or cancellation after timeout; inspect the active
@@ -87,9 +90,9 @@ RECIPE_ROOT="$PWD"
 mkdir quality-NEW_LABEL
 cd quality-NEW_LABEL
 python3 -B "$RECIPE_ROOT/bench/qeval.py" run NEW_LABEL-c1 \
-  --url http://127.0.0.1:8093/v1/chat/completions --concurrency 1
+  --url http://192.168.2.180:8888/v1/chat/completions --concurrency 1
 python3 -B "$RECIPE_ROOT/bench/qeval.py" run NEW_LABEL-c4 \
-  --url http://127.0.0.1:8093/v1/chat/completions --concurrency 4
+  --url http://192.168.2.180:8888/v1/chat/completions --concurrency 4
 ```
 
 The producer uses the historical model alias `GLM-5.3-Flash-FP8`. Do not use
@@ -131,10 +134,10 @@ do not build or qualify that reference for you:
 ```bash
 test ! -e reference.json && test ! -e candidate.json
 python3 -B "$RECIPE_ROOT/bench/kld_probe.py" collect \
-  --url http://REFERENCE_HOST:8093 --model GLM-5.3-Flash-FP8 \
+  --url http://REFERENCE_HOST:8888 --model GLM-5.3-Flash-FP8 \
   --texts YOUR_PANEL.json --out reference.json --k 20 --gen 256
 python3 -B "$RECIPE_ROOT/bench/kld_probe.py" collect \
-  --url http://127.0.0.1:8093 --model GLM-5.3-Flash-FP8 \
+  --url http://192.168.2.180:8888 --model GLM-5.3-Flash-FP8 \
   --texts YOUR_PANEL.json --out candidate.json --k 20 --gen 256
 python3 -B "$RECIPE_ROOT/bench/compare_kld_strict.py" \
   --texts YOUR_PANEL.json --reference reference.json --candidate candidate.json
@@ -158,7 +161,7 @@ prefix-cache hit could resume the KDA recurrent state from 1,152 tokens too earl
 gated boot:
 
 ```bash
-python3 -B bench/prefix_scan.py run NEW_LABEL --base http://127.0.0.1:8093 --out prefix-scan-NEW_LABEL.json
+python3 -B bench/prefix_scan.py run NEW_LABEL --base http://192.168.2.180:8888 --out prefix-scan-NEW_LABEL.json
 ```
 
 - **Prefix:** synthetic records, each with a random 5-letter code, so a correct quote cannot be rebuilt from a

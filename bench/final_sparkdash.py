@@ -32,16 +32,16 @@ def positive(value):
     return type(value) in (int, float) and math.isfinite(value) and value > 0
 
 
-def validate_job(job, bench_id, kind, concurrency, model='GLM-5.3-Flash-FP8'):
+def validate_job(job, bench_id, kind, concurrency, model='GLM-5.3-Flash-FP8', port=8888):
     errors = []
     if job.get('benchId') != bench_id:
         errors.append('job identity mismatch')
-    if job.get('sparkId') != 'spark-01':
+    if job.get('sparkId') != 'spark-a':
         errors.append('spark identity mismatch')
     if job.get('status') != 'completed' or job.get('error') is not None:
         errors.append('job did not complete without error')
     config = job.get('config') or {}
-    for key, expected in dict(port=8093, promptType=kind, concurrencies=[concurrency], maxTokens=256, modelId=model).items():
+    for key, expected in dict(port=port, promptType=kind, concurrencies=[concurrency], maxTokens=256, modelId=model).items():
         if config.get(key) != expected:
             errors.append(f'config mismatch: {key}')
     start, end = job.get('startedAt'), job.get('completedAt')
@@ -95,8 +95,8 @@ def http_json(url, body=None, timeout=30):
 
 
 def collect_job(base, kind, concurrency, timeout, record, save, seen_ids=None,
-                model='GLM-5.3-Flash-FP8', http=http_json, clock=time.monotonic, sleep=time.sleep):
-    record['request'] = dict(port=8093, concurrencies=[concurrency], maxTokens=256,
+                model='GLM-5.3-Flash-FP8', port=8888, http=http_json, clock=time.monotonic, sleep=time.sleep):
+    record['request'] = dict(port=port, concurrencies=[concurrency], maxTokens=256,
                              promptType=kind, modelId=model)
     status, posted = http(base + '/bench', record['request'], timeout=min(30, timeout))
     record['post_status'], record['post_job'] = status, posted
@@ -104,7 +104,7 @@ def collect_job(base, kind, concurrency, timeout, record, save, seen_ids=None,
     if status != 202 or not isinstance(posted.get('benchId'), str) or not posted['benchId']:
         raise RuntimeError('POST did not return202 and a benchId')
     if (posted.get('status') != 'running' or posted.get('error') is not None
-            or posted.get('sparkId') != 'spark-01' or not positive(posted.get('startedAt'))
+            or posted.get('sparkId') != 'spark-a' or not positive(posted.get('startedAt'))
             or posted.get('completedAt') is not None or posted.get('results') != []
             or any((posted.get('config') or {}).get(k) != v for k, v in record['request'].items())
             or (posted.get('progress') or {}).get('completedLevels') != 0
@@ -151,13 +151,16 @@ def summarize(records):
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument('label')
-    ap.add_argument('--base', default='http://127.0.0.1:5555/api/sparks/spark-01/llm')
+    ap.add_argument('--base', default='http://192.168.2.180:5555/api/sparks/spark-a/llm')
     ap.add_argument('--job-timeout', type=float, default=900)
     ap.add_argument('--model', default='GLM-5.3-Flash-FP8')
+    ap.add_argument('--port', type=int, default=8888, help='受测推理服务端口')
     ap.add_argument('--out', type=Path, required=True)
     args = ap.parse_args()
     if not math.isfinite(args.job_timeout) or args.job_timeout <= 0:
         ap.error('job-timeout must be finite and positive')
+    if not 1 <= args.port <= 65535:
+        ap.error('port must be in 1..65535')
     report = dict(bench='sparkDash DecodeBench', label=args.label,
                   script_sha256=hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
                   planned_cells=cells(), status='RUNNING', complete=False, records=[])
@@ -179,7 +182,7 @@ def main():
             report['records'].append(record)
             save()
             collect_job(args.base.rstrip('/'), kind, concurrency, args.job_timeout, record, save,
-                        seen_ids=seen_ids, model=args.model)
+                        seen_ids=seen_ids, model=args.model, port=args.port)
             record['valid'] = True
             save()
             print(json.dumps(dict(index=index, phase=phase, kind=kind, concurrency=concurrency,

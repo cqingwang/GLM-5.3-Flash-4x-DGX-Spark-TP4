@@ -22,6 +22,17 @@ def test_profile_loads_after_managed_ring_environment():
     assert result.stdout == "8888"
 
 
+def test_profile_binds_api_to_management_network():
+    result = subprocess.run(
+        ["bash", "-c", 'source profiles/current.env; printf "%s" "$HOST_BIND"'],
+        cwd=MODULE_ROOT,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert result.stdout == "0.0.0.0"
+
+
 def test_ring_shipper_ssh_does_not_consume_later_route_rows():
     model_shipper = (MODULE_ROOT / "scripts/ship_models_ring.sh").read_text()
     image_shipper = (MODULE_ROOT / "scripts/ship_image_ring.sh").read_text()
