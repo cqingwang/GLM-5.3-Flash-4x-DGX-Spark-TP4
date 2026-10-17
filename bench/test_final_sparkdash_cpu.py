@@ -6,9 +6,9 @@ import final_sparkdash as f
 
 
 def job(c=4):
-    return dict(benchId='new-id',sparkId='spark-01',status='completed',error=None,
+    return dict(benchId='new-id',sparkId='spark-a',status='completed',error=None,
                 startedAt=1000,completedAt=2000,
-                config=dict(port=8093,promptType='prose',concurrencies=[c],maxTokens=256,modelId='GLM-5.3-Flash-FP8'),
+                config=dict(port=8888,promptType='prose',concurrencies=[c],maxTokens=256,modelId='GLM-5.3-Flash-FP8'),
                 progress=dict(completedLevels=1,totalLevels=1),
                 results=[dict(concurrency=c,streamsOk=c,streamsFailed=0,error=None,
                               meanDecodeTps=40.,aggregateDecodeTps=150.,totalCompletionTokens=c*256,totalDecodeTokens=c*255,
@@ -42,10 +42,10 @@ class Contracts(unittest.TestCase):
             self.assertTrue(f.validate_job(j,'new-id','prose',4),(key,value))
 
     def test_identity_config_and_completion_are_mandatory(self):
-        for key,value in [('benchId','old-id'),('sparkId','spark-02'),('status','cancelled'),
+        for key,value in [('benchId','old-id'),('sparkId','spark-b'),('status','cancelled'),
                           ('completedAt',None),('error','failed')]:
             j=job();j[key]=value;self.assertTrue(f.validate_job(j,'new-id','prose',4))
-        for key,value in [('port',8094),('maxTokens',128),('promptType','code'),('concurrencies',[1]),('modelId','other')]:
+        for key,value in [('port',8889),('maxTokens',128),('promptType','code'),('concurrencies',[1]),('modelId','other')]:
             j=job();j['config'][key]=value;self.assertTrue(f.validate_job(j,'new-id','prose',4))
         j=job();j['progress']['completedLevels']=0;self.assertTrue(f.validate_job(j,'new-id','prose',4))
 
@@ -57,6 +57,7 @@ class Contracts(unittest.TestCase):
             return (202,posted(j)) if body is not None else (200,copy.deepcopy(j))
         result=f.collect_job('http://fixture','prose',4,10,record,lambda:None,http=http)
         self.assertEqual(calls,['http://fixture/bench','http://fixture/bench/new-id'])
+        self.assertEqual(record['request']['port'],8888)
         self.assertEqual(record['job'],result)
         self.assertIn('streams',record['job']['results'][0])
 
@@ -83,7 +84,7 @@ class Contracts(unittest.TestCase):
             p=posted(job())
             if kind=='completed':p=job()
             elif kind=='config':p['config']['modelId']='other'
-            else:p['sparkId']='spark-02'
+            else:p['sparkId']='spark-b'
             with self.assertRaisesRegex(RuntimeError,'fresh running'):
                 f.collect_job('http://fixture','prose',4,10,{},lambda:None,
                               http=lambda *a,**kw:(202,p))

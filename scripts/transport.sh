@@ -4,8 +4,33 @@ configure_transport() {
   case ${TRANSPORT:-switched} in
     switched) return 0;;
     switchless) ;;
-    *) echo 'TRANSPORT must be switched or switchless' >&2; return 2;;
+    ring-only) ;;
+    *) echo 'TRANSPORT must be switched, switchless or ring-only' >&2; return 2;;
   esac
+  if [[ ${TRANSPORT:-switched} == ring-only ]]; then
+    [[ ${#HOSTS[@]} == 4 && ${#IPS[@]} == 4 ]] || { echo 'ring-only requires four hosts and four bootstrap IPs in common.ring rank order' >&2; return 2; }
+    [[ ${NCCL_HOST_DIR:-} =~ ^/[a-zA-Z0-9_./-]+$ && $NCCL_HOST_DIR != / ]] || { echo 'absolute NCCL_HOST_DIR without whitespace required' >&2; return 2; }
+    [[ ${NCCL_LIBRARY_SHA256:-} =~ ^[a-f0-9]{64}$ ]] || { echo 'NCCL_LIBRARY_SHA256 must pin the validated ring library' >&2; return 2; }
+    [[ ${FABRIC_IFACE:-} =~ ^[a-zA-Z0-9_.:-]+$ && ${IB_HCA:-} =~ ^[a-zA-Z0-9_:.,-]+$ ]] || { echo 'management bootstrap interface and RDMA HCA list required' >&2; return 2; }
+    [[ ${NCCL_IB_GID_INDEX:-} == -1 && ${NCCL_IB_SUBNET_PREFIX_LEN:-} == 30 ]] || { echo 'site ring requires automatic GID selection and the actual /30 link prefix' >&2; return 2; }
+    local rank peer_name peer_value
+    for rank in 0 1 2 3; do
+      peer_name="PEER_HCA_RANK$rank"
+      peer_value="${!peer_name:-}"
+      [[ $peer_value =~ ^[0-3]=[a-zA-Z0-9_:.,-]+\;[0-3]=[a-zA-Z0-9_:.,-]+$ ]] || { echo "$peer_name must pin both physical ring neighbors" >&2; return 2; }
+    done
+    local kv clean=""
+    for kv in ${EXTRA_ENV:-}; do
+      case ${kv%%=*} in
+        GLM_ROCE_ALLREDUCE|B12X_ROCE_HCA) ;;
+        NCCL_*|LD_PRELOAD|VLLM_NCCL_SO_PATH|TORCH_USE_RTLD_GLOBAL|GLOO_SOCKET_IFNAME|MN_IF_NAME|TP_SOCKET_IFNAME|VLLM_HOST_IP)
+          echo 'transport overrides in EXTRA_ENV conflict with ring-only configuration' >&2; return 2;;
+        *) clean="$clean $kv";;
+      esac
+    done
+    EXTRA_ENV="${clean# } GLM_ROCE_ALLREDUCE=0"
+    return 0
+  fi
   # All validation precedes the first remote action. Values enter a remote shell
   # command, so reject whitespace, metacharacters and ambiguous path expansions.
   [[ ${#HOSTS[@]} == 4 && ${#IPS[@]} == 4 ]] || { echo 'switchless requires four hosts and four bootstrap IPs in ring rank order' >&2; return 2; }
@@ -37,6 +62,22 @@ PY
 }
 
 transport_args() {
+  if [[ ${TRANSPORT:-switched} == ring-only ]]; then
+    local rank=${1:-} peer_name peer_value
+    [[ $rank =~ ^[0-3]$ ]] || { echo 'ring-only transport requires rank 0..3' >&2; return 2; }
+    peer_name="PEER_HCA_RANK$rank"
+    peer_value="${!peer_name:-}"
+    printf '%s' "-e NCCL_SWITCHLESS_RING_ONLY=1 -e NCCL_ALGO=Ring \
+-e NCCL_NET=IB -e NCCL_IB_DISABLE=0 -e NCCL_IB_HCA=$IB_HCA -e NCCL_IB_PEER_HCA='$peer_value' \
+-e NCCL_IB_GID_INDEX=-1 -e NCCL_IB_GID_INDEX_FORCE=-1 -e NCCL_IB_SUBNET_AWARE_ROUTING=1 \
+-e NCCL_IB_SUBNET_PREFIX_LEN=30 -e NCCL_CROSS_NIC=1 -e NCCL_IB_MERGE_NICS=0 \
+-e NCCL_NET_PLUGIN=none -e NCCL_SOCKET_IFNAME==$FABRIC_IFACE -e GLOO_SOCKET_IFNAME=$FABRIC_IFACE \
+-e NCCL_P2P_DISABLE=1 -e NCCL_SHM_DISABLE=1 -e NCCL_IGNORE_CPU_AFFINITY=1 \
+-e NCCL_MIN_NCHANNELS=4 -e NCCL_MAX_NCHANNELS=4 -e NCCL_BUFFSIZE=8388608 \
+-e NCCL_IB_TIMEOUT=1000 -e NCCL_IB_RETRY_CNT=7 -e NCCL_IB_TOS=46 \
+-e NCCL_CUMEM_ENABLE=0 -e NCCL_DEBUG=INFO -e NCCL_DEBUG_SUBSYS=INIT,ENV"
+    return
+  fi
   if [[ ${TRANSPORT:-switched} != switchless ]]; then
     # Preserve the original switched command exactly, including interface match.
     # The continuation lines keep start.sh's original four-space indent, so the rendered command is byte-identical.
