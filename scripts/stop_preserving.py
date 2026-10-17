@@ -45,6 +45,28 @@ def stop_aux(root, container, proc=Path('/proc')):
                 os.close(fd)
 
 
+def stop_container_if_present(container):
+    inspected = subprocess.run(
+        ['docker', 'inspect', '--format', '{{.Id}}', container],
+        capture_output=True,
+        text=True,
+    )
+    if inspected.returncode != 0:
+        stderr = inspected.stderr or ''
+        normalized_stderr = stderr.lower()
+        missing = any(marker in normalized_stderr for marker in ('no such object:', 'no such container:'))
+        if missing and container.lower() in normalized_stderr:
+            print(f'container already absent: {container}')
+            return
+        raise subprocess.CalledProcessError(
+            inspected.returncode,
+            inspected.args,
+            output=inspected.stdout,
+            stderr=inspected.stderr,
+        )
+    subprocess.run(['docker', 'stop', '--timeout', '30', container], check=True)
+
+
 def main():
     p = argparse.ArgumentParser()
     p.add_argument('--root', type=Path, required=True)
@@ -53,7 +75,7 @@ def main():
     if not a.root.is_absolute() or not a.container or a.container.startswith('-'):
         p.error('absolute root and explicit container name required')
     stop_aux(a.root, a.container)
-    subprocess.run(['docker', 'stop', '--time', '30', a.container], check=True)
+    stop_container_if_present(a.container)
 
 if __name__ == '__main__':
     main()

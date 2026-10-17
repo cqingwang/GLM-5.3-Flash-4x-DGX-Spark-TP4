@@ -33,9 +33,29 @@ class RuntimeTests(unittest.TestCase):
     with self.assertRaises(PermissionError):s.stop_aux(r,'model-r0',proc)
  def test_stop_order_and_no_remove(self):
   events=[]
-  with patch('sys.argv',['stop','--root','/x','--container','model-r0']),patch.object(s,'stop_aux',side_effect=lambda *x:events.append('aux')),patch.object(s.subprocess,'run',side_effect=lambda argv,**kw:events.append(argv)):
+  def run(argv,**kw):
+   events.append(argv)
+   if argv[:2]==['docker','inspect']:
+    return subprocess.CompletedProcess(argv,0,stdout='container-id\n',stderr='')
+   return subprocess.CompletedProcess(argv,0,stdout='',stderr='')
+  with patch('sys.argv',['stop','--root','/x','--container','model-r0']),patch.object(s,'stop_aux',side_effect=lambda *x:events.append('aux')),patch.object(s.subprocess,'run',side_effect=run):
    s.main()
-  self.assertEqual(events,['aux',['docker','stop','--time','30','model-r0']])
+  self.assertEqual(events,['aux',['docker','inspect','--format','{{.Id}}','model-r0'],['docker','stop','--timeout','30','model-r0']])
+ def test_missing_container_is_idempotent(self):
+  events=[]
+  container='model-r0'
+  def run(argv,**kw):
+   events.append(argv)
+   return subprocess.CompletedProcess(argv,1,stdout='',stderr=f'error: no such object: {container}\n')
+  with patch('sys.argv',['stop','--root','/x','--container',container]),patch.object(s,'stop_aux',side_effect=lambda *x:events.append('aux')),patch.object(s.subprocess,'run',side_effect=run):
+   s.main()
+  self.assertEqual(events,['aux',['docker','inspect','--format','{{.Id}}',container]])
+ def test_docker_daemon_error_is_not_hidden(self):
+  container='model-r0'
+  def run(argv,**kw):
+   return subprocess.CompletedProcess(argv,1,stdout='',stderr='Cannot connect to the Docker daemon')
+  with patch('sys.argv',['stop','--root','/x','--container',container]),patch.object(s,'stop_aux'),patch.object(s.subprocess,'run',side_effect=run):
+   with self.assertRaises(subprocess.CalledProcessError):s.main()
  def test_actual_launcher_refuses_existing_before_sync(self):
   with tempfile.TemporaryDirectory() as td:
    r=Path(td);b=r/'bin';b.mkdir();log=r/'log'
@@ -52,6 +72,19 @@ class RuntimeTests(unittest.TestCase):
    env=r/'config';env.write_text('source .env.example\n')
    p=subprocess.run(['bash',str(ROOT/'start.sh'),'serve'],env={**os.environ,'PATH':str(b)+':'+os.environ['PATH'],'ENV_FILE':str(env),'TEST_LOG':str(log),'DRY':'1'},capture_output=True,text=True)
    self.assertEqual(p.returncode,0,p.stderr);self.assertFalse(log.exists());self.assertIn('[dry-run] rsync',p.stdout)
+ def test_stop_helper_comes_from_launcher_source_when_overlay_is_missing(self):
+  with tempfile.TemporaryDirectory() as td:
+   r=Path(td);b=r/'bin';b.mkdir();log=r/'calls';fake_python=b/'python3'
+   fake_python.write_text('#!/bin/sh\nprintf "%s\\n" "$*" >> "$TEST_LOG"\n')
+   fake_python.chmod(0o755)
+   env=r/'config';env.write_text('HOSTS="local local local local"\nIPS="1 2 3 4"\nCTN=glm53-nvfp4-ring\nOVERLAY_REMOTE=/missing-overlay\n')
+   p=subprocess.run(['bash',str(ROOT/'start.sh'),'stop'],env={**os.environ,'PATH':str(b)+':'+os.environ['PATH'],'ENV_FILE':str(env),'TEST_LOG':str(log)},capture_output=True,text=True)
+   self.assertEqual(p.returncode,0,p.stderr)
+   calls=log.read_text().splitlines()
+   self.assertEqual(len(calls),4)
+   expected=str(ROOT/'scripts/stop_preserving.py')
+   self.assertTrue(all(expected in call for call in calls),calls)
+   self.assertTrue(all('/missing-overlay/scripts/stop_preserving.py' not in call for call in calls),calls)
  def test_profile_has_selected_static_flags(self):
   p=subprocess.run(['bash','-c','IB_HCA=a,b; source profiles/current.env; printf "%s\\n" "$EXTRA_ENV"'],cwd=ROOT,capture_output=True,text=True,check=True)
   env=dict(x.split('=',1) for x in p.stdout.split())

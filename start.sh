@@ -3,6 +3,7 @@
 # usage: ./start.sh serve|stop|status|logs [rank]   (config in .env, copy .env.example)
 set -euo pipefail
 cd "$(dirname "$0")"
+SCRIPT_DIR="$(pwd -P)"
 ENV_FILE=${ENV_FILE:-.env}
 [[ -f $ENV_FILE ]] || { echo "copy .env.example to .env first (or set ENV_FILE)"; exit 1; }
 # Optional operator pin: with PRODUCTION_SOURCE_SHA256 set, refuse to start unless every file matches SOURCE_CLOSURE.json.
@@ -13,8 +14,12 @@ fi
 source "$ENV_FILE"
 CMD=${1:-status}
 read -r -a HOSTS <<<"$HOSTS"; read -r -a IPS <<<"$IPS"
+TARGET_CONTAINER_PREFIX="${TARGET_CONTAINER_PREFIX:-glm5.3_flash_nvfp4_switchless}"
+CTN="$TARGET_CONTAINER_PREFIX"
 source scripts/transport.sh
 OVERLAY_REMOTE=${OVERLAY_REMOTE:-\$HOME/glm53-flash-4x-spark}
+STOP_HELPER="$SCRIPT_DIR/scripts/stop_preserving.py"
+[[ -f $STOP_HELPER ]] || { echo "missing stop helper: $STOP_HELPER" >&2; exit 1; }
 VLLM_PKG=/usr/local/lib/python3.12/dist-packages/vllm
 MOE_JSON='E=288,N=512,device_name=NVIDIA_GB10,dtype=fp8_w8a8,block_shape=[128,128].json'
 
@@ -136,7 +141,7 @@ case $CMD in
     echo "launched ${CTN}-r0..3; ./start.sh status until /health is 200 (cold-cache boots can take longer)";;
   stop)   # stop, never remove: the containers stay for inspection or `docker start`; a new deployment needs a fresh CTN
     for r in 0 1 2 3; do
-      rssh "${HOSTS[$r]}" "python3 $OVERLAY_REMOTE/scripts/stop_preserving.py --root $OVERLAY_REMOTE --container ${CTN}-r$r"
+      rssh "${HOSTS[$r]}" "python3 $(printf '%q' "$STOP_HELPER") --root $(printf '%q' "$OVERLAY_REMOTE") --container $(printf '%q' "${CTN}-r$r")"
     done;;
   status)
     for r in 0 1 2 3; do rssh "${HOSTS[$r]}" "echo \$(hostname) \$(docker ps -a --filter name=${CTN}-r$r --format '{{.Status}}') avail=\$(free -g | awk 'NR==2{print \$7}')G"; done
